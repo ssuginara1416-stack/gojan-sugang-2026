@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>선착순 수강신청 시스템</title>
+  
+  <!-- 디자인 및 리액트 구동을 위한 필수 도구들 (설치 없이 인터넷으로 바로 불러옵니다) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Firebase 클라우드 장부 연결 스크립트 -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js"></script>
+</head>
+<body class="bg-gray-50">
+  <!-- 이곳에 앱이 그려집니다 -->
+  <div id="root"></div>
+
+  <!-- 앱 실제 작동 코드 -->
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // 🔑 선생님의 실제 Firebase API 키 적용 완료
+    const firebaseConfig = {
+      apiKey: "AIzaSyAKPSGCxv1Y7phvgUybmjU71Ty-AfVumj0",
+      authDomain: "project-20bff8a1-b419-40a9-a07.firebaseapp.com",
+      projectId: "project-20bff8a1-b419-40a9-a07",
+      storageBucket: "project-20bff8a1-b419-40a9-a07.firebasestorage.app",
+      messagingSenderId: "184915895962",
+      appId: "1:184915895962:web:3d59bf75b93123fe036123",
+      measurementId: "G-49V6PCGMM8"
+    };
+
+    // Firebase 초기화 및 장부(DB) 연결
+    if (!firebase.apps.length) {
+      firebase.initializeApp(firebaseConfig);
+    }
+    const db = firebase.firestore();
+    const auth = firebase.auth();
+
+    function CourseRegistrationApp() {
+      const [isAdmin, setIsAdmin] = useState(false);
+      const [showLogin, setShowLogin] = useState(false);
+      const [passwordInput, setPasswordInput] = useState('');
+      
+      const [recoveryMode, setRecoveryMode] = useState(false);
+      const [recoveryNameInput, setRecoveryNameInput] = useState('');
+      const [recoveredPassword, setRecoveredPassword] = useState(null);
+      
+      const [settings, setSettings] = useState({ 
+        appName: '2026 선착순 수강신청', 
+        description: '', startTime: '', endTime: '', maxCoursesPerStudent: 1,
+        adminName: '관리자', adminPassword: '1234' 
+      });
+
+      const [draftSettings, setDraftSettings] = useState({});
+      const [courses, setCourses] = useState([]);
+      const [student, setStudent] = useState({ studentId: '', name: '', phone: '' });
+      const [privacyConsent, setPrivacyConsent] = useState(false);
+      const [editingCourse, setEditingCourse] = useState(null);
+      const [modal, setModal] = useState({ isOpen: false, type: 'info', title: '', message: '' });
+      const [isTimeOpen, setIsTimeOpen] = useState(true);
+
+      const showModal = (type, title, message) => setModal({ isOpen: true, type, title, message });
+      const closeModal = () => setModal({ ...modal, isOpen: false });
+
+      // 1. 초기 로그인 (학생들이 별도 가입 없이 쓸 수 있게 익명 인증)
+      useEffect(() => {
+        auth.signInAnonymously().catch(console.error);
+      }, []);
+
+      // 2. Firebase 실시간 데이터 연동 (수강신청 현황이 실시간으로 변함)
+      useEffect(() => {
+        // 시스템 설정 불러오기
+        const unsubSettings = db.collection('config').doc('settings').onSnapshot((doc) => {
+          if (doc.exists) {
+            setSettings(doc.data());
+          } else {
+            // 처음 접속 시 기본 설정 저장
+            db.collection('config').doc('settings').set(settings);
+          }
+        });
+
+        // 강좌 목록 불러오기
+        const unsubCourses = db.collection('courses').orderBy('createdAt').onSnapshot((snapshot) => {
+          const loaded = [];
+          snapshot.forEach(doc => loaded.push({ id: doc.id, ...doc.data() }));
+          setCourses(loaded);
+        });
+
+        return () => { unsubSettings(); unsubCourses(); };
+      }, []);
+
+      // 시간 제한 체크
+      useEffect(() => {
+        const checkTime = () => {
+          const now = new Date().getTime();
+          const start = settings.startTime ? new Date(settings.startTime).getTime() : 0;
+          const end = settings.endTime ? new Date(settings.endTime).getTime() : Infinity;
+          if (start && now < start) setIsTimeOpen(false);
+          else if (end && now > end) setIsTimeOpen(false);
+          else setIsTimeOpen(true);
+        };
+        checkTime();
+        const timer = setInterval(checkTime, 1000);
+        return () => clearInterval(timer);
+      }, [settings.startTime, settings.endTime]);
+
+      const handleLogin = () => {
+        if (passwordInput === settings.adminPassword) {
+          setIsAdmin(true);
+          setDraftSettings(settings);
+          setShowLogin(false);
+          setPasswordInput('');
+          setRecoveryMode(false);
+          setRecoveredPassword(null);
+        } else {
+          showModal('error', '로그인 실패', '비밀번호가 일치하지 않습니다.');
+        }
+      };
+
+      const handleFindPassword = () => {
+        if (recoveryNameInput.trim() === settings.adminName) {
+          setRecoveredPassword(settings.adminPassword);
+        } else {
+          showModal('error', '확인 불가', '입력하신 관리자 이름이 일치하지 않습니다.');
+        }
+      };
+
+      const saveSettings = () => {
+        db.collection('config').doc('settings').set(draftSettings).then(() => {
+          showModal('success', '저장 완료', '시스템 설정이 성공적으로 반영되었습니다.');
+        }).catch(() => showModal('error', '오류', '설정 저장에 실패했습니다.'));
+      };
+
+      const handleApply = async (courseId) => {
+        if (!student.studentId || !student.name || !student.phone) {
+          showModal('error', '입력 오류', '학번, 이름, 연락처를 모두 입력해주세요.'); return;
+        }
+        if (!/^\d{5}$/.test(student.studentId)) {
+          showModal('error', '입력 오류', '학번은 5자리 숫자로만 입력해주세요. (예: 20135)'); return;
+        }
+        if (!privacyConsent) {
+          showModal('error', '동의 필요', '개인정보 수집 및 이용에 동의해야 신청 가능합니다.'); return;
+        }
+
+        const appliedCourses = courses.filter(c => c.applicants.some(a => a.studentId === student.studentId));
+        const identityMismatch = appliedCourses.some(c => c.applicants.some(a => a.studentId === student.studentId && (a.name !== student.name || a.phone !== student.phone)));
+        
+        if (identityMismatch) {
+          showModal('error', '정보 불일치', '해당 학번은 이미 다른 이름/연락처로 등록되어 있습니다.'); return;
+        }
+        if (appliedCourses.some(c => c.id === courseId)) {
+          showModal('error', '신청 불가', '이미 신청이 완료된 과목입니다.'); return;
+        }
+        if (appliedCourses.length >= settings.maxCoursesPerStudent) {
+          showModal('error', '신청 불가', `1인당 최대 ${settings.maxCoursesPerStudent}과목까지만 신청할 수 있습니다.`); return;
+        }
+
+        const courseRef = db.collection('courses').doc(courseId);
+        try {
+          await db.runTransaction(async (transaction) => {
+            const docSnap = await transaction.get(courseRef);
+            if (!docSnap.exists) throw "no_course";
+            const data = docSnap.data();
+            if (data.applicants.length >= data.capacity) throw "full";
+            
+            const newApplicants = [...data.applicants, { ...student, appliedAt: new Date().toISOString() }];
+            transaction.update(courseRef, { applicants: newApplicants });
+          });
+          showModal('success', '신청 완료', `수강신청이 성공적으로 완료되었습니다!`);
+        } catch (error) {
+          if (error === "full") showModal('error', '마감', '해당 강좌는 이미 마감되었습니다.');
+          else showModal('error', '오류', '신청 중 문제가 발생했습니다.');
+        }
+      };
+
+      const handleCancel = async (courseId) => {
+        if (!student.studentId) {
+          showModal('error', '입력 오류', '본인의 학번을 입력해야 취소할 수 있습니다.'); return;
+        }
+        const courseRef = db.collection('courses').doc(courseId);
+        try {
+          await db.runTransaction(async (transaction) => {
+            const docSnap = await transaction.get(courseRef);
+            if (!docSnap.exists) throw "no_course";
+            const data = docSnap.data();
+            const updatedApplicants = data.applicants.filter(a => a.studentId !== student.studentId);
+            transaction.update(courseRef, { applicants: updatedApplicants });
+          });
+          showModal('success', '취소 완료', `수강신청이 성공적으로 취소되었습니다.`);
+        } catch (error) {
+          showModal('error', '오류', '취소 중 문제가 발생했습니다.');
+        }
+      };
+
+      const handleAddCourse = (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        db.collection('courses').add({
+          name: formData.get('name'),
+          topic: formData.get('topic'),
+          capacity: parseInt(formData.get('capacity')),
+          applicants: [],
+          createdAt: Date.now()
+        }).then(() => {
+          e.target.reset();
+          showModal('success', '강좌 등록됨', '새로운 강좌가 성공적으로 등록되었습니다.');
+        });
+      };
+
+      const handleDeleteCourse = (id) => {
+        if(confirm("정말로 이 강좌를 삭제하시겠습니까?")) {
+          db.collection('courses').doc(id).delete();
+        }
+      };
+
+      const saveEditedCourse = () => {
+        if (!editingCourse.name || !editingCourse.topic || !editingCourse.capacity) {
+          showModal('error', '입력 오류', '모든 항목을 입력해주세요.'); return;
+        }
+        db.collection('courses').doc(editingCourse.id).update({
+          name: editingCourse.name,
+          topic: editingCourse.topic,
+          capacity: editingCourse.capacity
+        }).then(() => {
+          setEditingCourse(null);
+          showModal('success', '수정 완료', '강좌 정보가 성공적으로 변경되었습니다.');
+        });
+      };
+
+      const exportToCSV = () => {
+        let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
+        csvContent += "강좌명,주제,총원,신청학번,신청자명,연락처,신청시간\n";
+
+        courses.forEach(course => {
+          if (course.applicants.length === 0) {
+            csvContent += `${course.name},${course.topic},${course.capacity},---,신청자 없음,---,---\n`;
+          } else {
+            course.applicants.forEach(applicant => {
+              const time = new Date(applicant.appliedAt).toLocaleString();
+              csvContent += `${course.name},${course.topic},${course.capacity},${applicant.studentId},${applicant.name},${applicant.phone},${time}\n`;
+            });
+          }
+        });
+
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", `${settings.appName}_신청명단.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      };
+
+      const renderAdminView = () => (
+        <div className="space-y-8">
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <h3 className="text-xl font-bold flex items-center mb-6 text-gray-800">
+              <span className="mr-2 text-xl">⚙️</span> 시스템 전체 설정
+            </h3>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 border-b border-gray-100 pb-8">
+              <div className="md:col-span-2">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">앱/사이트 이름</label>
+                <input type="text" className="w-full p-3 border border-gray-300 rounded-xl"
+                  value={draftSettings.appName || ''} onChange={(e) => setDraftSettings({...draftSettings, appName: e.target.value})} />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">안내 사항 (소개글)</label>
+                <textarea rows="3" placeholder="학생들에게 보여줄 안내글을 적어주세요." className="w-full p-3 border border-gray-300 rounded-xl resize-none"
+                  value={draftSettings.description || ''} onChange={(e) => setDraftSettings({...draftSettings, description: e.target.value})} />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">시작 시간</label>
+                <input type="datetime-local" className="w-full p-3 border border-gray-300 rounded-xl"
+                  value={draftSettings.startTime || ''} onChange={(e) => setDraftSettings({...draftSettings, startTime: e.target.value})} />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">종료 시간</label>
+                <input type="datetime-local" className="w-full p-3 border border-gray-300 rounded-xl"
+                  value={draftSettings.endTime || ''} onChange={(e) => setDraftSettings({...draftSettings, endTime: e.target.value})} />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">학생 1인당 최대 신청 개수</label>
+                <input type="number" min="1" className="w-full p-3 border border-gray-300 rounded-xl"
+                  value={draftSettings.maxCoursesPerStudent || 1} onChange={(e) => setDraftSettings({...draftSettings, maxCoursesPerStudent: parseInt(e.target.value) || 1})} />
+              </div>
+            </div>
+
+            <h4 className="text-lg font-bold flex items-center mb-4 text-gray-800">
+              <span className="mr-2 text-xl">🔑</span> 계정 및 보안 설정
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-gray-50 p-5 rounded-xl border border-gray-200 mb-6">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">관리자 이름 (비밀번호 찾기용)</label>
+                <input type="text" className="w-full p-3 border border-gray-300 rounded-xl"
+                  value={draftSettings.adminName || ''} onChange={(e) => setDraftSettings({...draftSettings, adminName: e.target.value})} />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">새 비밀번호 설정</label>
+                <input type="text" className="w-full p-3 border border-gray-300 rounded-xl"
+                  value={draftSettings.adminPassword || ''} onChange={(e) => setDraftSettings({...draftSettings, adminPassword: e.target.value})} />
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <button onClick={saveSettings} className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-xl font-bold">
+                설정 저장하기
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+              <h3 className="text-xl font-bold flex items-center text-gray-800">
+                <span className="mr-2 text-xl">📖</span> 강좌 관리 및 명단
+              </h3>
+              <button onClick={exportToCSV} className="flex items-center bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-xl text-sm font-bold w-full md:w-auto justify-center">
+                <span className="mr-2">📥</span> 엑셀 다운로드
+              </button>
+            </div>
+
+            <form onSubmit={handleAddCourse} className="bg-gray-50 p-4 rounded-xl mb-6 border border-gray-200">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <input name="name" type="text" placeholder="강좌명" required className="p-3 border rounded-lg md:col-span-2" />
+                <input name="topic" type="text" placeholder="주제" required className="p-3 border rounded-lg" />
+                <input name="capacity" type="number" min="1" placeholder="정원(명)" required className="p-3 border rounded-lg" />
+              </div>
+              <button type="submit" className="mt-3 w-full bg-indigo-600 text-white font-bold py-3 rounded-lg flex justify-center">
+                <span className="mr-2">➕</span> 강좌 추가하기
+              </button>
+            </form>
+
+            <div className="overflow-x-auto rounded-xl border border-gray-200">
+              <table className="w-full text-left border-collapse min-w-[700px]">
+                <thead>
+                  <tr className="bg-gray-100 text-gray-700 text-sm">
+                    <th className="p-4 border-b">강좌명</th>
+                    <th className="p-4 border-b">주제</th>
+                    <th className="p-4 border-b">신청현황</th>
+                    <th className="p-4 border-b text-center">관리</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {courses.length === 0 ? (
+                    <tr><td colSpan="4" className="p-8 text-center text-gray-500">등록된 강좌가 없습니다.</td></tr>
+                  ) : courses.map(course => (
+                    <tr key={course.id} className="border-b hover:bg-gray-50">
+                      <td className="p-4 font-medium">{course.name}</td>
+                      <td className="p-4 text-sm text-gray-600">{course.topic}</td>
+                      <td className="p-4 font-bold">{course.applicants.length}/{course.capacity}명</td>
+                      <td className="p-4 text-center">
+                        <button onClick={() => setEditingCourse(course)} className="text-blue-500 p-2 text-lg">✏️</button>
+                        <button onClick={() => handleDeleteCourse(course.id)} className="text-red-500 p-2 text-lg">🗑️</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      );
+
+      const renderStudentView = () => (
+        <div className="space-y-6">
+          {!isTimeOpen && (
+            <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-xl flex items-start shadow-sm">
+              <span className="text-2xl mr-3">🕒</span>
+              <div>
+                <h3 className="font-bold text-red-800">현재 수강신청 기간이 아닙니다.</h3>
+              </div>
+            </div>
+          )}
+
+          {settings.description && settings.description.trim() !== '' && (
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+              <p className="text-gray-700 whitespace-pre-wrap leading-relaxed">{settings.description}</p>
+            </div>
+          )}
+
+          <div className="bg-white p-6 md:p-8 rounded-2xl shadow-sm border border-gray-100">
+            <h2 className="text-xl font-bold mb-6 text-gray-800 flex items-center border-b pb-4">
+              <span className="mr-2 text-xl">👥</span> 1. 인적사항 입력
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-6">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">학번 (5자리)</label>
+                <input type="text" className="w-full p-3 border rounded-xl" placeholder="예: 20135" maxLength="5" disabled={!isTimeOpen}
+                  value={student.studentId} onChange={e => setStudent({...student, studentId: e.target.value})} />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">이름</label>
+                <input type="text" className="w-full p-3 border rounded-xl" placeholder="홍길동" disabled={!isTimeOpen}
+                  value={student.name} onChange={e => setStudent({...student, name: e.target.value})} />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">연락처</label>
+                <input type="tel" className="w-full p-3 border rounded-xl" placeholder="010-0000-0000" disabled={!isTimeOpen}
+                  value={student.phone} onChange={e => setStudent({...student, phone: e.target.value})} />
+              </div>
+            </div>
+
+            <div className={`p-4 rounded-xl border ${privacyConsent ? 'bg-indigo-50 border-indigo-200' : 'bg-gray-50'}`}>
+              <label className="flex items-start cursor-pointer">
+                <input type="checkbox" className="w-5 h-5 mt-1" disabled={!isTimeOpen}
+                  checked={privacyConsent} onChange={(e) => setPrivacyConsent(e.target.checked)} />
+                <div className="ml-3 text-sm">
+                  <span className="font-bold text-gray-800">🛡️ [필수] 개인정보 수집 및 이용 동의</span>
+                  <p className="text-gray-600 mt-1">본 시스템은 수집된 정보를 목적 외에 사용하지 않으며 종료 후 파기합니다.</p>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div className="bg-white p-6 md:p-8 rounded-2xl shadow-sm border border-gray-100">
+            <div className="flex flex-col md:flex-row justify-between items-center mb-6 border-b pb-4">
+              <h2 className="text-xl font-bold text-gray-800 flex items-center">
+                <span className="mr-2 text-xl">✅</span> 2. 강좌 선택
+              </h2>
+              <span className="mt-2 text-sm font-bold text-indigo-700 bg-indigo-50 px-4 py-1.5 rounded-full">
+                최대 {settings.maxCoursesPerStudent}과목 신청
+              </span>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {courses.map(course => {
+                const isFull = course.applicants.length >= course.capacity;
+                const remaining = course.capacity - course.applicants.length;
+                const hasApplied = student.studentId && course.applicants.some(a => a.studentId === student.studentId);
+                
+                return (
+                  <div key={course.id} className={`border rounded-2xl p-5 ${isFull && !hasApplied ? 'bg-gray-50 opacity-75' : 'bg-white'}`}>
+                    <div className="flex justify-between items-start mb-2">
+                      <span className="text-xs font-bold px-2 py-1 rounded bg-gray-100">{course.topic}</span>
+                      <span className={`text-xs font-bold px-2 py-1 rounded ${isFull && !hasApplied ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                        {isFull ? '마감' : `${remaining}명 남음`}
+                      </span>
+                    </div>
+                    <h3 className="text-lg font-bold mb-4 line-clamp-2 min-h-[3rem]">{course.name}</h3>
+                    
+                    <div className="mb-4">
+                      <div className="w-full bg-gray-200 rounded-full h-2 mb-1">
+                        <div className={`h-2 rounded-full ${isFull ? 'bg-red-400' : 'bg-indigo-500'}`} style={{width: `${(course.applicants.length/course.capacity)*100}%`}}></div>
+                      </div>
+                      <div className="flex justify-between text-xs text-gray-500 font-medium">
+                        <span>현재 {course.applicants.length}명</span>
+                        <span>총 {course.capacity}명</span>
+                      </div>
+                    </div>
+
+                    {hasApplied ? (
+                      <button onClick={() => handleCancel(course.id)} disabled={!isTimeOpen} className="w-full py-3 rounded-xl font-bold bg-red-100 text-red-700">
+                        신청 취소하기
+                      </button>
+                    ) : (
+                      <button onClick={() => handleApply(course.id)} disabled={!isTimeOpen || isFull} 
+                        className={`w-full py-3 rounded-xl font-bold ${!isTimeOpen ? 'bg-gray-200' : isFull ? 'bg-red-50 text-red-500' : 'bg-indigo-600 text-white'}`}>
+                        {isFull ? '수강 마감' : '신청하기'}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      );
+
+      return (
+        <div className="min-h-screen pb-20">
+          <header className="bg-white shadow-sm sticky top-0 z-10 border-b">
+            <div className="max-w-6xl mx-auto px-4 py-4 flex justify-between items-center">
+              <h1 className="text-xl font-extrabold text-indigo-900 flex items-center">
+                <span className="mr-2 text-2xl">📖</span> {settings.appName}
+              </h1>
+              {isAdmin ? (
+                <button onClick={() => setIsAdmin(false)} className="bg-gray-100 px-4 py-2 rounded-xl font-bold">🚪 학생 모드로</button>
+              ) : (
+                <button onClick={() => { setShowLogin(true); setRecoveryMode(false); }} className="p-2 text-2xl">⚙️</button>
+              )}
+            </div>
+          </header>
+
+          <main className="max-w-6xl mx-auto px-4 py-8">
+            {isAdmin ? renderAdminView() : renderStudentView()}
+          </main>
+
+          {/* 강좌 수정 모달 */}
+          {editingCourse && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-2xl p-6 w-full max-w-md">
+                <h2 className="text-xl font-bold mb-4">강좌 수정</h2>
+                <div className="space-y-4 mb-6">
+                  <input type="text" value={editingCourse.name} onChange={e => setEditingCourse({...editingCourse, name: e.target.value})} className="w-full p-3 border rounded-xl" placeholder="강좌명"/>
+                  <input type="text" value={editingCourse.topic} onChange={e => setEditingCourse({...editingCourse, topic: e.target.value})} className="w-full p-3 border rounded-xl" placeholder="주제"/>
+                  <input type="number" value={editingCourse.capacity} onChange={e => setEditingCourse({...editingCourse, capacity: parseInt(e.target.value)||1})} className="w-full p-3 border rounded-xl" placeholder="정원"/>
+                </div>
+                <div className="flex gap-3">
+                  <button onClick={() => setEditingCourse(null)} className="flex-1 py-3 bg-gray-100 rounded-xl font-bold">취소</button>
+                  <button onClick={saveEditedCourse} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-bold">저장하기</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 로그인 모달 */}
+          {showLogin && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-2xl p-6 w-full max-w-sm text-center">
+                {recoveryMode ? (
+                  <>
+                    <h2 className="text-xl font-bold mb-2">비밀번호 찾기</h2>
+                    <p className="text-sm text-gray-500 mb-4">관리자 이름을 입력하세요.</p>
+                    {recoveredPassword ? (
+                      <div className="bg-green-50 p-4 rounded-xl mb-4">
+                        <p className="text-xl font-bold text-green-600">{recoveredPassword}</p>
+                      </div>
+                    ) : (
+                      <input type="text" className="w-full p-4 border rounded-xl mb-4 text-center" placeholder="이름 입력"
+                        value={recoveryNameInput} onChange={e => setRecoveryNameInput(e.target.value)} />
+                    )}
+                    <div className="flex flex-col gap-2">
+                      {!recoveredPassword && <button onClick={handleFindPassword} className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold">확인</button>}
+                      <button onClick={() => setRecoveryMode(false)} className="w-full py-3 bg-gray-100 rounded-xl font-bold">돌아가기</button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <h2 className="text-xl font-bold mb-2">🔒 관리자 로그인</h2>
+                    <input type="password" placeholder="비밀번호 입력" className="w-full p-4 border rounded-xl mb-2 text-center text-lg"
+                      value={passwordInput} onChange={e => setPasswordInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleLogin()} />
+                    <div className="text-right mb-6">
+                      <button onClick={() => setRecoveryMode(true)} className="text-sm text-indigo-500 font-medium">비밀번호를 잊으셨나요?</button>
+                    </div>
+                    <div className="flex gap-3">
+                      <button onClick={() => setShowLogin(false)} className="flex-1 py-3 bg-gray-100 rounded-xl font-bold">취소</button>
+                      <button onClick={handleLogin} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-bold">로그인</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 알림 모달 */}
+          {modal.isOpen && (
+            <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-2xl p-6 w-full max-w-sm text-center">
+                <div className="text-4xl mb-4">{modal.type === 'error' ? '⚠️' : '✅'}</div>
+                <h3 className="text-xl font-bold mb-2">{modal.title}</h3>
+                <p className="text-gray-600 mb-6">{modal.message}</p>
+                <button onClick={closeModal} className={`w-full py-3 rounded-xl font-bold text-white ${modal.type === 'error' ? 'bg-gray-800' : 'bg-indigo-600'}`}>확인</button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<CourseRegistrationApp />);
+  </script>
+</body>
+</html>
