@@ -5,26 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>선착순 수강신청 시스템</title>
   
-  <!-- 디자인 및 리액트 구동을 위한 필수 도구들 (설치 없이 인터넷으로 바로 불러옵니다) -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   
-  <!-- Firebase 클라우드 장부 연결 스크립트 -->
   <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js"></script>
 </head>
 <body class="bg-gray-50">
-  <!-- 이곳에 앱이 그려집니다 -->
   <div id="root"></div>
 
-  <!-- 앱 실제 작동 코드 -->
   <script type="text/babel">
     const { useState, useEffect } = React;
 
-    // 🔑 선생님의 실제 Firebase API 키 적용 완료
     const firebaseConfig = {
       apiKey: "AIzaSyAKPSGCxv1Y7phvgUybmjU71Ty-AfVumj0",
       authDomain: "project-20bff8a1-b419-40a9-a07.firebaseapp.com",
@@ -35,12 +30,14 @@
       measurementId: "G-49V6PCGMM8"
     };
 
-    // Firebase 초기화 및 장부(DB) 연결
     if (!firebase.apps.length) {
       firebase.initializeApp(firebaseConfig);
     }
     const db = firebase.firestore();
     const auth = firebase.auth();
+
+    // 💡 선생님의 구글 시트 우체통 주소
+    const GOOGLE_SHEET_URL = "https://script.google.com/macros/s/AKfycbwGCsmQgfSN39TEJtniksKS4fM72j9iSYdLNUPGzZQOxyBK5AzAdAA46r1Am65QoDC8/exec";
 
     function CourseRegistrationApp() {
       const [isAdmin, setIsAdmin] = useState(false);
@@ -68,12 +65,10 @@
       const showModal = (type, title, message) => setModal({ isOpen: true, type, title, message });
       const closeModal = () => setModal({ ...modal, isOpen: false });
 
-      // 1. 초기 로그인 (학생들이 별도 가입 없이 쓸 수 있게 익명 인증)
       useEffect(() => {
         auth.signInAnonymously().catch(console.error);
       }, []);
 
-      // 2. Firebase 실시간 데이터 연동 (수강신청 현황이 실시간으로 변함)
       useEffect(() => {
         const unsubSettings = db.collection('config').doc('settings').onSnapshot((doc) => {
           if (doc.exists) {
@@ -92,7 +87,6 @@
         return () => { unsubSettings(); unsubCourses(); };
       }, []);
 
-      // 시간 제한 체크
       useEffect(() => {
         const checkTime = () => {
           const now = new Date().getTime();
@@ -134,7 +128,6 @@
         }).catch(() => showModal('error', '오류', '설정 저장에 실패했습니다.'));
       };
 
-      // 💡 전화번호 자동 포맷팅 함수 (숫자만 쳐도 010-0000-0000 으로 변환)
       const handlePhoneChange = (e) => {
         const onlyNums = e.target.value.replace(/[^0-9]/g, '');
         let formatted = '';
@@ -155,7 +148,6 @@
         if (!/^\d{5}$/.test(student.studentId)) {
           showModal('error', '입력 오류', '학번은 5자리 숫자로만 입력해주세요. (예: 20135)'); return;
         }
-        // 💡 전화번호 정규식 검사 (010-0000-0000 형식 강제)
         if (!/^010-\d{4}-\d{4}$/.test(student.phone)) {
           showModal('error', '입력 오류', '연락처는 010-0000-0000 형식으로 올바르게 입력해주세요.'); return;
         }
@@ -187,6 +179,24 @@
             const newApplicants = [...data.applicants, { ...student, appliedAt: new Date().toISOString() }];
             transaction.update(courseRef, { applicants: newApplicants });
           });
+
+          // 💡 구글 시트로 신청 데이터 전송
+          const appliedCourse = courses.find(c => c.id === courseId);
+          if (appliedCourse) {
+            fetch(GOOGLE_SHEET_URL, {
+              method: 'POST',
+              mode: 'no-cors',
+              body: JSON.stringify({
+                timestamp: new Date().toLocaleString('ko-KR'),
+                courseName: appliedCourse.name,
+                topic: appliedCourse.topic,
+                studentId: student.studentId,
+                name: student.name,
+                phone: student.phone
+              })
+            }).catch(console.error);
+          }
+
           showModal('success', '신청 완료', `수강신청이 성공적으로 완료되었습니다!`);
         } catch (error) {
           if (error === "full") showModal('error', '마감', '해당 강좌는 이미 마감되었습니다.');
@@ -207,6 +217,24 @@
             const updatedApplicants = data.applicants.filter(a => a.studentId !== student.studentId);
             transaction.update(courseRef, { applicants: updatedApplicants });
           });
+
+          // 💡 구글 시트로 취소 데이터 전송
+          const canceledCourse = courses.find(c => c.id === courseId);
+          if (canceledCourse) {
+            fetch(GOOGLE_SHEET_URL, {
+              method: 'POST',
+              mode: 'no-cors',
+              body: JSON.stringify({
+                timestamp: new Date().toLocaleString('ko-KR'),
+                courseName: "[취소] " + canceledCourse.name,
+                topic: canceledCourse.topic,
+                studentId: student.studentId,
+                name: student.name,
+                phone: student.phone
+              })
+            }).catch(console.error);
+          }
+
           showModal('success', '취소 완료', `수강신청이 성공적으로 취소되었습니다.`);
         } catch (error) {
           showModal('error', '오류', '취소 중 문제가 발생했습니다.');
@@ -257,7 +285,7 @@
             csvContent += `${course.name},${course.topic},${course.capacity},---,신청자 없음,---,---\n`;
           } else {
             course.applicants.forEach(applicant => {
-              const time = new Date(applicant.appliedAt).toLocaleString();
+              const time = new Date(applicant.appliedAt).toLocaleString('ko-KR');
               csvContent += `${course.name},${course.topic},${course.capacity},${applicant.studentId},${applicant.name},${applicant.phone},${time}\n`;
             });
           }
@@ -416,7 +444,6 @@
               </div>
               <div>
                 <label className="block text-sm font-semibold text-gray-700 mb-1">연락처</label>
-                <!-- 💡 자동 포맷팅 함수 연결 -->
                 <input type="tel" className="w-full p-3 border rounded-xl focus:ring-2 focus:ring-indigo-500" placeholder="010-0000-0000" disabled={!isTimeOpen} maxLength="13"
                   value={student.phone} onChange={handlePhoneChange} />
               </div>
@@ -507,7 +534,6 @@
             {isAdmin ? renderAdminView() : renderStudentView()}
           </main>
 
-          {/* 강좌 수정 모달 */}
           {editingCourse && (
             <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
               <div className="bg-white rounded-2xl p-6 w-full max-w-md">
@@ -525,7 +551,6 @@
             </div>
           )}
 
-          {/* 로그인 모달 */}
           {showLogin && (
             <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
               <div className="bg-white rounded-2xl p-6 w-full max-w-sm text-center">
@@ -564,7 +589,6 @@
             </div>
           )}
 
-          {/* 알림 모달 */}
           {modal.isOpen && (
             <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
               <div className="bg-white rounded-2xl p-6 w-full max-w-sm text-center">
