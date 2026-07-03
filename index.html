@@ -36,8 +36,8 @@
     const db = firebase.firestore();
     const auth = firebase.auth();
 
-    // 💡 선생님의 구글 시트 우체통 주소
-    const GOOGLE_SHEET_URL = "https://script.google.com/macros/s/AKfycbwGCsmQgfSN39TEJtniksKS4fM72j9iSYdLNUPGzZQOxyBK5AzAdAA46r1Am65QoDC8/exec";
+    // 💡 선생님께서 새로 발급받으신 구글 시트 주소가 적용되었습니다!
+    const GOOGLE_SHEET_URL = "https://script.google.com/macros/s/AKfycbwpmftixpT8oOYjIBDjkvlKmwFFy_E6MTc13MFwSYPx_Kd0ZvhuJlIR3e_FGmSRb4fu/exec";
 
     function CourseRegistrationApp() {
       const [isAdmin, setIsAdmin] = useState(false);
@@ -180,7 +180,7 @@
             transaction.update(courseRef, { applicants: newApplicants });
           });
 
-          // 💡 구글 시트로 신청 데이터 전송
+          // 💡 구글 시트로 '신청' 데이터 전송 (상태 열 포함)
           const appliedCourse = courses.find(c => c.id === courseId);
           if (appliedCourse) {
             fetch(GOOGLE_SHEET_URL, {
@@ -188,6 +188,7 @@
               mode: 'no-cors',
               body: JSON.stringify({
                 timestamp: new Date().toLocaleString('ko-KR'),
+                status: "신청",
                 courseName: appliedCourse.name,
                 topic: appliedCourse.topic,
                 studentId: student.studentId,
@@ -218,7 +219,7 @@
             transaction.update(courseRef, { applicants: updatedApplicants });
           });
 
-          // 💡 구글 시트로 취소 데이터 전송
+          // 💡 구글 시트로 '취소' 데이터 전송 (상태 열 포함)
           const canceledCourse = courses.find(c => c.id === courseId);
           if (canceledCourse) {
             fetch(GOOGLE_SHEET_URL, {
@@ -226,7 +227,8 @@
               mode: 'no-cors',
               body: JSON.stringify({
                 timestamp: new Date().toLocaleString('ko-KR'),
-                courseName: "[취소] " + canceledCourse.name,
+                status: "취소",
+                courseName: canceledCourse.name,
                 topic: canceledCourse.topic,
                 studentId: student.studentId,
                 name: student.name,
